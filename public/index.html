@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claude Skill Finder</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div>
+        <h1>Claude Skill Finder</h1>
+        <p class="subtitle">Browse installed Claude skills on your machine</p>
+      </div>
+      <div class="stats" id="stats"></div>
+    </header>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <label class="search-label" for="search">Search</label>
+        <input
+          id="search"
+          class="search-input"
+          type="search"
+          placeholder="Filter by name, description, or path..."
+          autocomplete="off"
+        />
+        <div class="source-filters" id="source-filters"></div>
+        <ul class="skill-list" id="skill-list"></ul>
+      </aside>
+
+      <section class="detail" id="detail">
+        <div class="empty-state">
+          <h2>Select a skill</h2>
+          <p>Choose a skill from the list to view its contents.</p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>
