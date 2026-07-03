@@ -2,6 +2,14 @@
 
 Browse installed Claude skills (`SKILL.md`) in a local Web UI.
 
+## Features
+
+- Search and filter skills by name, description, path, and source (user / project / plugin / custom)
+- Live reload: skill directories are watched and the UI refreshes automatically; a Reload button triggers a manual rescan
+- Lint warnings per skill (missing frontmatter, missing or non-kebab-case name, missing or overlong description, empty body, duplicate names)
+- Token estimates for each skill's description and full `SKILL.md` content
+- In-UI viewer for auxiliary files inside a skill directory (markdown rendered, text shown as code, binary files detected and skipped)
+
 ## Quick start
 
 From this repository:
@@ -30,15 +38,15 @@ After `bun link`, you can use `bunx claude-skill-finder` from anywhere on your m
 
 ## CLI options
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--port <number>` | Port to listen on | `3847` |
-| `--host <address>` | Host to bind | `127.0.0.1` |
-| `--open` | Open browser on start | on |
-| `--no-open` | Do not open browser | |
-| `--all` | Include plugin cache skills | off |
-| `--path <dir>` | Additional directory to scan (repeatable) | |
-| `--cwd <dir>` | Project skill search root | current directory |
+| Flag               | Description                               | Default           |
+| ------------------ | ----------------------------------------- | ----------------- |
+| `--port <number>`  | Port to listen on                         | `3847`            |
+| `--host <address>` | Host to bind                              | `127.0.0.1`       |
+| `--open`           | Open browser on start                     | on                |
+| `--no-open`        | Do not open browser                       |                   |
+| `--all`            | Include plugin cache skills               | off               |
+| `--path <dir>`     | Additional directory to scan (repeatable) |                   |
+| `--cwd <dir>`      | Project skill search root                 | current directory |
 
 Examples:
 
@@ -72,10 +80,7 @@ You can add persistent scan paths in:
 
 ```json
 {
-  "paths": [
-    "~/my-skills",
-    "/absolute/path/to/skills"
-  ]
+  "paths": ["~/my-skills", "/absolute/path/to/skills"]
 }
 ```
 
@@ -85,14 +90,24 @@ Symlinked skills are deduplicated by their real path.
 
 ## API
 
-- `GET /api/skills` — list skill summaries
-- `GET /api/skills/:id` — skill detail with markdown body and auxiliary files
+- `GET /api/skills` — list skill summaries (including warnings and token estimates)
+- `GET /api/skills/:id` — skill detail with markdown body and auxiliary file listing (`{ relativePath, size }`)
+- `GET /api/skills/:id/file?path=<relativePath>` — read an auxiliary file; binary files return `binary: true` with `content: null`; paths outside the skill directory (including via symlinks) are rejected; files larger than 2 MB return `413`
+- `POST /api/rescan` — rescan all roots and return the fresh skill list
+- `GET /api/events` — Server-Sent Events stream; emits `{"type":"skills-changed"}` whenever the skill set changes (filesystem watcher or rescan)
 
-## Tests
+## Development
 
 ```bash
-bun test
+bun test             # run tests
+bun run lint         # oxlint
+bun run lint:fix     # oxlint with autofix
+bun run format       # oxfmt (write)
+bun run format:check # oxfmt (check only)
+bun run typecheck    # tsc for src/ and public/
 ```
+
+All of these run in CI (GitHub Actions) on pushes and pull requests to `main`.
 
 ## Publishing
 

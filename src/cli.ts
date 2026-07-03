@@ -96,10 +96,7 @@ export function parseArgs(argv: string[]): CliOptions {
   return options;
 }
 
-async function findAvailablePort(
-  host: string,
-  startPort: number,
-): Promise<number> {
+async function findAvailablePort(host: string, startPort: number): Promise<number> {
   for (let port = startPort; port < startPort + 100; port++) {
     try {
       const probe = Bun.serve({
@@ -148,7 +145,7 @@ async function main(): Promise<void> {
     cwd: options.cwd,
   });
 
-  const { server, skills } = await createServer({
+  const { server, skills, stop } = await createServer({
     host: options.host,
     port,
     all: options.all,
@@ -174,8 +171,9 @@ async function main(): Promise<void> {
   }
 
   process.on("SIGINT", () => {
-    server.stop(true);
-    process.exit(0);
+    void stop().finally(() => {
+      process.exit(0);
+    });
   });
 
   await new Promise(() => {});

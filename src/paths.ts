@@ -3,10 +3,7 @@ import { join } from "node:path";
 
 /** Default user-level skill directories (scanned on every run). */
 export function getDefaultUserSkillDirs(home: string): string[] {
-  return [
-    join(home, ".claude", "skills"),
-    join(home, ".agents", "skills"),
-  ];
+  return [join(home, ".claude", "skills"), join(home, ".agents", "skills")];
 }
 
 /** Plugin cache root, included when `--all` is passed. */

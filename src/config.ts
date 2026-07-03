@@ -7,9 +7,7 @@ export interface SkillFinderConfig {
   paths?: string[];
 }
 
-export async function loadConfig(
-  home: string = homedir(),
-): Promise<SkillFinderConfig> {
+export async function loadConfig(home: string = homedir()): Promise<SkillFinderConfig> {
   const configPath = getConfigFilePath(home);
 
   if (!existsSync(configPath)) {
@@ -34,10 +32,7 @@ export async function loadConfig(
   }
 }
 
-export function resolveConfigPaths(
-  paths: string[] | undefined,
-  home: string,
-): string[] {
+export function resolveConfigPaths(paths: string[] | undefined, home: string): string[] {
   if (!paths) return [];
 
   return paths.map((path) => {

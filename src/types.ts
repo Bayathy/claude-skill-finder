@@ -8,13 +8,21 @@ export interface SkillSummary {
   realPath: string;
   source: SkillSource;
   directory: string;
+  warnings: string[];
+  descriptionTokens: number;
+  bodyTokens: number;
+}
+
+export interface SkillFile {
+  relativePath: string;
+  size: number;
 }
 
 export interface SkillDetail extends SkillSummary {
   content: string;
   frontmatter: Record<string, string>;
   body: string;
-  files: string[];
+  files: SkillFile[];
 }
 
 export interface ScanOptions {

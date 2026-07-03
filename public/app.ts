@@ -8,13 +8,28 @@ interface SkillSummary {
   realPath: string;
   source: SkillSource;
   directory: string;
+  warnings: string[];
+  descriptionTokens: number;
+  bodyTokens: number;
+}
+
+interface SkillFile {
+  relativePath: string;
+  size: number;
 }
 
 interface SkillDetail extends SkillSummary {
   content: string;
   frontmatter: Record<string, string>;
   body: string;
-  files: string[];
+  files: SkillFile[];
+}
+
+interface SkillFileContent {
+  relativePath: string;
+  size: number;
+  binary: boolean;
+  content: string | null;
 }
 
 const SOURCE_LABELS: Record<SkillSource, string> = {
@@ -33,6 +48,7 @@ const state = {
 
 const statsEl = document.getElementById("stats")!;
 const searchEl = document.getElementById("search") as HTMLInputElement;
+const reloadEl = document.getElementById("reload") as HTMLButtonElement;
 const sourceFiltersEl = document.getElementById("source-filters")!;
 const skillListEl = document.getElementById("skill-list")!;
 const detailEl = document.getElementById("detail")!;
@@ -45,8 +61,10 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-function toFileUrl(path: string): string {
-  return `file://${path}`;
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function renderMarkdown(markdown: string): string {
@@ -64,7 +82,9 @@ function renderMarkdown(markdown: string): string {
     stash(`<pre><code>${code.trim()}</code></pre>`),
   );
 
-  text = text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  text = text.replace(/`([^`\n]+)`/g, (_match, code: string) => stash(`<code>${code}</code>`));
+  text = text.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/(^|[^*])\*(\S(?:[^*\n]*\S)?)\*(?!\*)/g, "$1<em>$2</em>");
   text = text.replace(/^###### (.+)$/gm, "<h6>$1</h6>");
   text = text.replace(/^##### (.+)$/gm, "<h5>$1</h5>");
   text = text.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
@@ -105,12 +125,7 @@ function getFilteredSkills(): SkillSummary[] {
     if (!state.activeSources.has(skill.source)) return false;
     if (!query) return true;
 
-    const haystack = [
-      skill.name,
-      skill.description,
-      skill.path,
-      skill.source,
-    ]
+    const haystack = [skill.name, skill.description, skill.path, skill.source]
       .join(" ")
       .toLowerCase();
 
@@ -137,39 +152,43 @@ function renderSourceFilters(): void {
     })
     .join("");
 
-  sourceFiltersEl.querySelectorAll<HTMLButtonElement>(".filter-chip").forEach(
-    (button) => {
-      button.addEventListener("click", () => {
-        const source = button.dataset.source as SkillSource;
-        if (state.activeSources.has(source)) {
-          state.activeSources.delete(source);
-        } else {
-          state.activeSources.add(source);
-        }
-        renderSourceFilters();
-        renderSkillList();
-      });
-    },
-  );
+  sourceFiltersEl.querySelectorAll<HTMLButtonElement>(".filter-chip").forEach((button) => {
+    button.addEventListener("click", () => {
+      const source = button.dataset.source as SkillSource;
+      if (state.activeSources.has(source)) {
+        state.activeSources.delete(source);
+      } else {
+        state.activeSources.add(source);
+      }
+      renderSourceFilters();
+      renderSkillList();
+    });
+  });
 }
 
 function renderSkillList(): void {
   const filtered = getFilteredSkills();
 
   if (filtered.length === 0) {
-    skillListEl.innerHTML =
-      '<li class="list-empty">No skills match your filters.</li>';
+    skillListEl.innerHTML = '<li class="list-empty">No skills match your filters.</li>';
     return;
   }
 
   skillListEl.innerHTML = filtered
     .map((skill) => {
       const active = skill.id === state.selectedId ? "active" : "";
+      const warningBadge =
+        skill.warnings.length > 0
+          ? `<span class="badge badge-warning" title="${escapeHtml(skill.warnings.join("\n"))}">⚠ ${skill.warnings.length}</span>`
+          : "";
       return `<li>
         <button class="skill-item ${active}" data-id="${skill.id}">
           <div class="skill-item-title">
             <span>${escapeHtml(skill.name)}</span>
-            <span class="badge badge-${skill.source}">${SOURCE_LABELS[skill.source]}</span>
+            <span class="skill-item-badges">
+              ${warningBadge}
+              <span class="badge badge-${skill.source}">${SOURCE_LABELS[skill.source]}</span>
+            </span>
           </div>
           <p class="skill-item-desc">${escapeHtml(skill.description || "No description")}</p>
         </button>
@@ -177,15 +196,13 @@ function renderSkillList(): void {
     })
     .join("");
 
-  skillListEl.querySelectorAll<HTMLButtonElement>(".skill-item").forEach(
-    (button) => {
-      button.addEventListener("click", () => {
-        const id = button.dataset.id;
-        if (!id) return;
-        void selectSkill(id);
-      });
-    },
-  );
+  skillListEl.querySelectorAll<HTMLButtonElement>(".skill-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.id;
+      if (!id) return;
+      void selectSkill(id);
+    });
+  });
 }
 
 function renderEmptyDetail(): void {
@@ -197,20 +214,122 @@ function renderEmptyDetail(): void {
   `;
 }
 
+let detailRequestSeq = 0;
+
+async function loadSkillDetail(id: string, showError: boolean): Promise<void> {
+  const seq = ++detailRequestSeq;
+
+  let skill: SkillDetail;
+  try {
+    const response = await fetch(`/api/skills/${encodeURIComponent(id)}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    skill = (await response.json()) as SkillDetail;
+  } catch {
+    if (showError && seq === detailRequestSeq && state.selectedId === id) {
+      detailEl.innerHTML = `<div class="empty-state"><p>Failed to load skill. Click the skill in the list to retry.</p></div>`;
+    }
+    return;
+  }
+
+  // Ignore out-of-order responses and responses for a no-longer-selected skill.
+  if (seq !== detailRequestSeq || state.selectedId !== id) return;
+  renderDetail(skill);
+}
+
 async function selectSkill(id: string): Promise<void> {
   state.selectedId = id;
   renderSkillList();
 
   detailEl.innerHTML = `<div class="empty-state"><p>Loading...</p></div>`;
+  await loadSkillDetail(id, true);
+}
 
-  const response = await fetch(`/api/skills/${encodeURIComponent(id)}`);
-  if (!response.ok) {
-    detailEl.innerHTML = `<div class="empty-state"><p>Failed to load skill.</p></div>`;
-    return;
+function renderFilePanelShell(relativePath: string, bodyHtml: string): string {
+  return `<div class="file-panel-header">
+      <span class="file-panel-title">${escapeHtml(relativePath)}</span>
+      <button class="file-panel-close" type="button">Close</button>
+    </div>
+    <div class="file-panel-body">${bodyHtml}</div>`;
+}
+
+function renderFileContent(file: SkillFileContent): string {
+  if (file.binary || file.content === null) {
+    return '<p class="file-panel-status">Binary file — not displayed</p>';
+  }
+  if (file.relativePath.endsWith(".md")) {
+    return `<div class="markdown-body">${renderMarkdown(file.content)}</div>`;
+  }
+  return `<pre><code>${escapeHtml(file.content)}</code></pre>`;
+}
+
+function bindFileViewer(skill: SkillDetail): void {
+  const panel = detailEl.querySelector<HTMLElement>(".file-panel");
+  if (!panel) return;
+  const buttons = Array.from(detailEl.querySelectorAll<HTMLButtonElement>(".file-button"));
+  let openPath: string | null = null;
+  let requestSeq = 0;
+
+  function closePanel(): void {
+    openPath = null;
+    panel!.hidden = true;
+    panel!.innerHTML = "";
+    buttons.forEach((button) => button.classList.remove("active"));
   }
 
-  const skill = (await response.json()) as SkillDetail;
-  renderDetail(skill);
+  function bindClose(): void {
+    panel!
+      .querySelector<HTMLButtonElement>(".file-panel-close")
+      ?.addEventListener("click", closePanel);
+  }
+
+  async function openFile(path: string): Promise<void> {
+    const seq = ++requestSeq;
+    panel!.hidden = false;
+    panel!.innerHTML = renderFilePanelShell(path, '<p class="file-panel-status">Loading...</p>');
+    bindClose();
+
+    let bodyHtml: string;
+    try {
+      const response = await fetch(
+        `/api/skills/${encodeURIComponent(skill.id)}/file?path=${encodeURIComponent(path)}`,
+      );
+      if (response.ok) {
+        const file = (await response.json()) as SkillFileContent;
+        bodyHtml = renderFileContent(file);
+      } else {
+        let message = `Failed to load file (HTTP ${response.status}).`;
+        try {
+          const data = (await response.json()) as { error?: string };
+          if (data.error) message = data.error;
+        } catch {
+          // Keep the generic message when the body is not JSON.
+        }
+        bodyHtml = `<p class="file-panel-status">${escapeHtml(message)}</p>`;
+      }
+    } catch {
+      bodyHtml = '<p class="file-panel-status">Failed to load file.</p>';
+    }
+
+    if (seq !== requestSeq || openPath !== path) return;
+    panel!.innerHTML = renderFilePanelShell(path, bodyHtml);
+    bindClose();
+  }
+
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const path = button.dataset.path;
+      if (!path) return;
+      if (openPath === path) {
+        closePanel();
+        return;
+      }
+      openPath = path;
+      buttons.forEach((other) => other.classList.toggle("active", other === button));
+      void openFile(path);
+    });
+  });
 }
 
 function renderDetail(skill: SkillDetail): void {
@@ -218,18 +337,33 @@ function renderDetail(skill: SkillDetail): void {
     .map(([key, value]) => `${key}: ${value}`)
     .join("\n");
 
+  const warningsPanel =
+    skill.warnings.length > 0
+      ? `<div class="warning-panel">
+          <h3>Warnings</h3>
+          <ul>
+            ${skill.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}
+          </ul>
+        </div>`
+      : "";
+
   const auxFiles =
     skill.files.length > 0
       ? `<div class="aux-files">
           <h3>Additional files</h3>
-          <ul>
+          <ul class="file-list">
             ${skill.files
               .map(
-                (file) =>
-                  `<li><a href="${toFileUrl(file)}">${escapeHtml(file)}</a></li>`,
+                (file) => `<li>
+                  <button class="file-button" type="button" data-path="${escapeHtml(file.relativePath)}">
+                    <span class="file-name">${escapeHtml(file.relativePath)}</span>
+                    <span class="file-size">${formatSize(file.size)}</span>
+                  </button>
+                </li>`,
               )
               .join("")}
           </ul>
+          <div class="file-panel" hidden></div>
         </div>`
       : "";
 
@@ -239,7 +373,8 @@ function renderDetail(skill: SkillDetail): void {
         <h2>${escapeHtml(skill.name)}</h2>
         <div class="detail-meta">
           <span class="badge badge-${skill.source}">${SOURCE_LABELS[skill.source]}</span>
-          <a href="${toFileUrl(skill.path)}">${escapeHtml(skill.path)}</a>
+          <span class="detail-path">${escapeHtml(skill.path)}</span>
+          <span class="detail-tokens">≈${skill.descriptionTokens} tok description · ≈${skill.bodyTokens} tok total</span>
         </div>
       </header>
       ${
@@ -247,6 +382,7 @@ function renderDetail(skill: SkillDetail): void {
           ? `<p class="detail-description">${escapeHtml(skill.description)}</p>`
           : ""
       }
+      ${warningsPanel}
       ${
         frontmatter
           ? `<details class="collapsible" open>
@@ -259,6 +395,8 @@ function renderDetail(skill: SkillDetail): void {
       <div class="markdown-body">${renderMarkdown(skill.body)}</div>
     </article>
   `;
+
+  bindFileViewer(skill);
 }
 
 function updateStats(): void {
@@ -274,26 +412,110 @@ function updateStats(): void {
     .filter((source) => (counts[source] ?? 0) > 0)
     .map((source) => `${SOURCE_LABELS[source]}: ${counts[source]}`);
 
-  statsEl.textContent = `${state.skills.length} skills${parts.length ? ` (${parts.join(" · ")})` : ""}`;
+  const totalDescriptionTokens = state.skills.reduce(
+    (sum, skill) => sum + skill.descriptionTokens,
+    0,
+  );
+
+  statsEl.textContent = `${state.skills.length} skills · ≈${totalDescriptionTokens} tok in descriptions${parts.length ? ` (${parts.join(" · ")})` : ""}`;
 }
 
-async function init(): Promise<void> {
-  const response = await fetch("/api/skills");
-  const data = (await response.json()) as { skills: SkillSummary[] };
-  state.skills = data.skills;
+function applySkills(skills: SkillSummary[]): void {
+  state.skills = skills;
+
+  if (state.selectedId !== null && skills.some((skill) => skill.id === state.selectedId)) {
+    // The selected skill may have changed on disk — refresh the open detail
+    // pane silently (keep the current pane if the refresh fails).
+    void loadSkillDetail(state.selectedId, false);
+  } else {
+    // Also clears a stale "Failed to load skills" message after recovery.
+    state.selectedId = null;
+    renderEmptyDetail();
+  }
 
   updateStats();
   renderSourceFilters();
   renderSkillList();
-  renderEmptyDetail();
+}
 
+async function refreshSkills(): Promise<void> {
+  const response = await fetch("/api/skills");
+  if (!response.ok) {
+    throw new Error(`Failed to fetch skills (HTTP ${response.status})`);
+  }
+  const data = (await response.json()) as { skills: SkillSummary[] };
+  applySkills(data.skills);
+}
+
+async function rescan(): Promise<void> {
+  reloadEl.disabled = true;
+  try {
+    const response = await fetch("/api/rescan", { method: "POST" });
+    if (!response.ok) return;
+    const data = (await response.json()) as { skills: SkillSummary[] };
+    applySkills(data.skills);
+  } finally {
+    reloadEl.disabled = false;
+  }
+}
+
+let eventsWereDisconnected = false;
+
+function subscribeToEvents(): void {
+  const events = new EventSource("/api/events");
+
+  events.addEventListener("open", () => {
+    // Changes made while the connection was down were never broadcast to us.
+    if (eventsWereDisconnected) {
+      eventsWereDisconnected = false;
+      void refreshSkills().catch(() => {});
+    }
+  });
+
+  events.addEventListener("error", () => {
+    eventsWereDisconnected = true;
+    if (events.readyState === EventSource.CLOSED) {
+      // The browser gave up on auto-reconnect — start a fresh connection.
+      events.close();
+      setTimeout(subscribeToEvents, 5000);
+    }
+  });
+
+  events.addEventListener("message", (event: MessageEvent<string>) => {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      (payload as { type?: unknown }).type === "skills-changed"
+    ) {
+      void refreshSkills().catch(() => {});
+    }
+  });
+}
+
+async function init(): Promise<void> {
+  // Attach handlers and subscribe to events before the first fetch, so a
+  // failed initial load still leaves the Reload button and SSE refresh alive.
   searchEl.addEventListener("input", () => {
     state.query = searchEl.value;
     renderSkillList();
   });
+
+  reloadEl.addEventListener("click", () => {
+    void rescan().catch(() => {});
+  });
+
+  subscribeToEvents();
+
+  await refreshSkills();
 }
 
 init().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  detailEl.innerHTML = `<div class="empty-state"><p>Failed to load skills: ${escapeHtml(message)}</p></div>`;
+  detailEl.innerHTML = `<div class="empty-state"><p>Failed to load skills: ${escapeHtml(message)}</p><p>Press Reload to try again.</p></div>`;
 });
