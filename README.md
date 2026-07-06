@@ -113,8 +113,12 @@ All of these run in CI (GitHub Actions) on pushes and pull requests to `main`.
 
 ## Publishing
 
-This package is currently local-only. After publishing to npm, you will be able to run:
+Once published to npm, run it from anywhere without installing:
 
 ```bash
 bunx claude-skill-finder
 ```
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

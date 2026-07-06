@@ -1,6 +1,7 @@
 {
   "name": "claude-skill-finder",
   "version": "0.1.0",
+  "license": "MIT",
   "bin": {
     "claude-skill-finder": "./src/cli.ts"
   },
