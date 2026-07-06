@@ -10,6 +10,7 @@ interface SkillFileResponse {
   size: number;
   binary: boolean;
   content: string | null;
+  contentHtml: string | null;
 }
 
 let tempHome: string;
@@ -36,7 +37,7 @@ beforeAll(async () => {
 
   await Bun.write(
     join(sampleDir, "SKILL.md"),
-    "---\nname: sample-skill\ndescription: Sample skill for server tests.\n---\n\n# Sample\n\nBody text.\n",
+    "---\nname: sample-skill\ndescription: Sample skill for server tests.\n---\n\n# Sample\n\nBody text.\n\n<script>alert(1)</script>\n",
   );
   await Bun.write(join(sampleDir, "notes.txt"), "hello notes");
   await Bun.write(join(sampleDir, "refs", "deep.txt"), "deep file");
@@ -51,6 +52,7 @@ beforeAll(async () => {
   await Bun.write(join(tempHome, "secret.txt"), "top secret");
   await Bun.write(join(tempHome, "outside", "secret.txt"), "outside secret");
   await Bun.write(join(guardedDir, "real.txt"), "real file");
+  await Bun.write(join(guardedDir, "doc.md"), "# Doc\n\n**bold** text\n");
   await symlink(join(tempHome, "secret.txt"), join(guardedDir, "leak.txt"), "file");
   await symlink(join(tempHome, "outside"), join(guardedDir, "outdir"), "dir");
   await symlink(join(guardedDir, "real.txt"), join(guardedDir, "alias.txt"), "file");
@@ -104,6 +106,16 @@ describe("GET /api/skills/:id", () => {
     expect(detail.body).toContain("# Sample");
   });
 
+  test("renders the body to HTML with raw HTML escaped", async () => {
+    const id = await getSkillId("sample-skill");
+    const res = await fetch(`${baseUrl}/api/skills/${id}`);
+    expect(res.status).toBe(200);
+
+    const detail = (await res.json()) as SkillDetail;
+    expect(detail.bodyHtml).toContain("<h1>Sample</h1>");
+    expect(detail.bodyHtml).not.toContain("<script>");
+  });
+
   test("returns 404 for an unknown skill", async () => {
     const res = await fetch(`${baseUrl}/api/skills/unknown-id`);
     expect(res.status).toBe(404);
@@ -123,7 +135,18 @@ describe("GET /api/skills/:id/file", () => {
       size: 11,
       binary: false,
       content: "hello notes",
+      contentHtml: null,
     });
+  });
+
+  test("renders markdown files to HTML", async () => {
+    const id = await getSkillId("guarded-skill");
+    const res = await fetch(`${baseUrl}/api/skills/${id}/file?path=doc.md`);
+    expect(res.status).toBe(200);
+
+    const data = (await res.json()) as SkillFileResponse;
+    expect(data.contentHtml).toContain("<h1>Doc</h1>");
+    expect(data.contentHtml).toContain("<strong>bold</strong>");
   });
 
   test("returns nested file content", async () => {
@@ -147,6 +170,7 @@ describe("GET /api/skills/:id/file", () => {
       size: 4,
       binary: true,
       content: null,
+      contentHtml: null,
     });
   });
 

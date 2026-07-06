@@ -22,6 +22,7 @@ export interface SkillDetail extends SkillSummary {
   content: string;
   frontmatter: Record<string, string>;
   body: string;
+  bodyHtml: string;
   files: SkillFile[];
 }
 

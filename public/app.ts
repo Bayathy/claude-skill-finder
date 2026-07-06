@@ -22,6 +22,7 @@ interface SkillDetail extends SkillSummary {
   content: string;
   frontmatter: Record<string, string>;
   body: string;
+  bodyHtml: string;
   files: SkillFile[];
 }
 
@@ -30,6 +31,7 @@ interface SkillFileContent {
   size: number;
   binary: boolean;
   content: string | null;
+  contentHtml: string | null;
 }
 
 const SOURCE_LABELS: Record<SkillSource, string> = {
@@ -38,6 +40,10 @@ const SOURCE_LABELS: Record<SkillSource, string> = {
   plugin: "Plugin",
   custom: "Custom",
 };
+
+const ALL_SOURCES = Object.keys(SOURCE_LABELS) as SkillSource[];
+const RELOAD_LABEL = "Reload";
+const COPY_PATH_LABEL = "Copy path";
 
 const state = {
   skills: [] as SkillSummary[],
@@ -61,61 +67,63 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function isSkillSource(value: string): value is SkillSource {
+  return Object.prototype.hasOwnProperty.call(SOURCE_LABELS, value);
+}
+
+function parseUrlState(): void {
+  const params = new URLSearchParams(location.search);
+  const skillParam = params.get("skill");
+  const sourceParam = params.get("sources");
+
+  state.query = params.get("q") ?? "";
+  state.selectedId = skillParam && skillParam.trim() ? skillParam : null;
+  state.activeSources =
+    sourceParam === null
+      ? new Set(ALL_SOURCES)
+      : new Set(sourceParam.split(",").filter(isSkillSource));
+
+  searchEl.value = state.query;
+}
+
+function syncUrlState(): void {
+  const url = new URL(location.href);
+  const activeSources = ALL_SOURCES.filter((source) => state.activeSources.has(source));
+
+  if (state.selectedId) {
+    url.searchParams.set("skill", state.selectedId);
+  } else {
+    url.searchParams.delete("skill");
+  }
+
+  if (state.query.trim()) {
+    url.searchParams.set("q", state.query);
+  } else {
+    url.searchParams.delete("q");
+  }
+
+  if (activeSources.length === ALL_SOURCES.length) {
+    url.searchParams.delete("sources");
+  } else {
+    url.searchParams.set("sources", activeSources.join(","));
+  }
+
+  history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function renderMarkdown(markdown: string): string {
-  const placeholders: string[] = [];
-
-  function stash(html: string): string {
-    const key = `@@PLACEHOLDER_${placeholders.length}@@`;
-    placeholders.push(html);
-    return key;
-  }
-
-  let text = escapeHtml(markdown);
-
-  text = text.replace(/```([\s\S]*?)```/g, (_match, code: string) =>
-    stash(`<pre><code>${code.trim()}</code></pre>`),
-  );
-
-  text = text.replace(/`([^`\n]+)`/g, (_match, code: string) => stash(`<code>${code}</code>`));
-  text = text.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-  text = text.replace(/(^|[^*])\*(\S(?:[^*\n]*\S)?)\*(?!\*)/g, "$1<em>$2</em>");
-  text = text.replace(/^###### (.+)$/gm, "<h6>$1</h6>");
-  text = text.replace(/^##### (.+)$/gm, "<h5>$1</h5>");
-  text = text.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
-  text = text.replace(/^### (.+)$/gm, "<h3>$1</h3>");
-  text = text.replace(/^## (.+)$/gm, "<h2>$1</h2>");
-  text = text.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  text = text.replace(/^> (.+)$/gm, "<blockquote><p>$1</p></blockquote>");
-  text = text.replace(/^\s*[-*] (.+)$/gm, "<li>$1</li>");
-  text = text.replace(/(<li>.*<\/li>\n?)+/g, (block) => `<ul>${block}</ul>`);
-  text = text.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noreferrer">$1</a>',
-  );
-
-  const blocks = text.split(/\n{2,}/);
-  text = blocks
-    .map((block) => {
-      const trimmed = block.trim();
-      if (!trimmed) return "";
-      if (/^<(h[1-6]|ul|ol|pre|blockquote)/.test(trimmed)) {
-        return trimmed;
-      }
-      return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
-    })
-    .join("\n");
-
-  placeholders.forEach((html, index) => {
-    text = text.replaceAll(`@@PLACEHOLDER_${index}@@`, html);
+// Markdown is rendered to HTML server-side (Bun.markdown) — links only need
+// the browser-side attributes the server output does not carry.
+function openMarkdownLinksInNewTab(root: ParentNode): void {
+  root.querySelectorAll<HTMLAnchorElement>(".markdown-body a[href]").forEach((anchor) => {
+    anchor.target = "_blank";
+    anchor.rel = "noreferrer";
   });
-
-  return text;
 }
 
 function getFilteredSkills(): SkillSummary[] {
@@ -142,12 +150,11 @@ function renderSourceFilters(): void {
     {} as Partial<Record<SkillSource, number>>,
   );
 
-  sourceFiltersEl.innerHTML = (Object.keys(SOURCE_LABELS) as SkillSource[])
-    .filter((source) => (counts[source] ?? 0) > 0)
+  sourceFiltersEl.innerHTML = ALL_SOURCES.filter((source) => (counts[source] ?? 0) > 0)
     .map((source) => {
       const active = state.activeSources.has(source);
-      return `<button class="filter-chip ${active ? "active" : ""}" data-source="${source}">
-        ${SOURCE_LABELS[source]} (${counts[source] ?? 0})
+      return `<button class="filter-chip ${active ? "active" : ""}" data-source="${escapeHtml(source)}" aria-pressed="${active ? "true" : "false"}">
+        ${escapeHtml(SOURCE_LABELS[source])} (${counts[source] ?? 0})
       </button>`;
     })
     .join("");
@@ -162,6 +169,7 @@ function renderSourceFilters(): void {
       }
       renderSourceFilters();
       renderSkillList();
+      syncUrlState();
     });
   });
 }
@@ -179,15 +187,15 @@ function renderSkillList(): void {
       const active = skill.id === state.selectedId ? "active" : "";
       const warningBadge =
         skill.warnings.length > 0
-          ? `<span class="badge badge-warning" title="${escapeHtml(skill.warnings.join("\n"))}">⚠ ${skill.warnings.length}</span>`
+          ? `<span class="badge badge-warning" title="${escapeHtml(skill.warnings.join("\n"))}" aria-label="${skill.warnings.length} warnings">⚠ ${skill.warnings.length}</span>`
           : "";
       return `<li>
-        <button class="skill-item ${active}" data-id="${skill.id}">
+        <button class="skill-item ${active}" data-id="${escapeHtml(skill.id)}" ${skill.id === state.selectedId ? 'aria-current="true"' : ""}>
           <div class="skill-item-title">
             <span>${escapeHtml(skill.name)}</span>
             <span class="skill-item-badges">
               ${warningBadge}
-              <span class="badge badge-${skill.source}">${SOURCE_LABELS[skill.source]}</span>
+              <span class="badge badge-${escapeHtml(skill.source)}">${escapeHtml(SOURCE_LABELS[skill.source])}</span>
             </span>
           </div>
           <p class="skill-item-desc">${escapeHtml(skill.description || "No description")}</p>
@@ -212,6 +220,21 @@ function renderEmptyDetail(): void {
       <p>Choose a skill from the list to view its contents.</p>
     </div>
   `;
+}
+
+function renderLoadingDetail(): void {
+  detailEl.innerHTML = `<div class="empty-state"><p>Loading…</p></div>`;
+}
+
+function selectedSkillExists(): boolean {
+  return state.selectedId !== null && state.skills.some((skill) => skill.id === state.selectedId);
+}
+
+function clearSelectedSkill(): void {
+  if (state.selectedId !== null) {
+    state.selectedId = null;
+    syncUrlState();
+  }
 }
 
 let detailRequestSeq = 0;
@@ -241,8 +264,9 @@ async function loadSkillDetail(id: string, showError: boolean): Promise<void> {
 async function selectSkill(id: string): Promise<void> {
   state.selectedId = id;
   renderSkillList();
+  syncUrlState();
 
-  detailEl.innerHTML = `<div class="empty-state"><p>Loading...</p></div>`;
+  renderLoadingDetail();
   await loadSkillDetail(id, true);
 }
 
@@ -258,8 +282,8 @@ function renderFileContent(file: SkillFileContent): string {
   if (file.binary || file.content === null) {
     return '<p class="file-panel-status">Binary file — not displayed</p>';
   }
-  if (file.relativePath.endsWith(".md")) {
-    return `<div class="markdown-body">${renderMarkdown(file.content)}</div>`;
+  if (file.contentHtml !== null) {
+    return `<div class="markdown-body">${file.contentHtml}</div>`;
   }
   return `<pre><code>${escapeHtml(file.content)}</code></pre>`;
 }
@@ -271,11 +295,19 @@ function bindFileViewer(skill: SkillDetail): void {
   let openPath: string | null = null;
   let requestSeq = 0;
 
+  function updateFileButtons(): void {
+    buttons.forEach((button) => {
+      const active = openPath !== null && button.dataset.path === openPath;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-expanded", active ? "true" : "false");
+    });
+  }
+
   function closePanel(): void {
     openPath = null;
     panel!.hidden = true;
     panel!.innerHTML = "";
-    buttons.forEach((button) => button.classList.remove("active"));
+    updateFileButtons();
   }
 
   function bindClose(): void {
@@ -287,7 +319,7 @@ function bindFileViewer(skill: SkillDetail): void {
   async function openFile(path: string): Promise<void> {
     const seq = ++requestSeq;
     panel!.hidden = false;
-    panel!.innerHTML = renderFilePanelShell(path, '<p class="file-panel-status">Loading...</p>');
+    panel!.innerHTML = renderFilePanelShell(path, '<p class="file-panel-status">Loading…</p>');
     bindClose();
 
     let bodyHtml: string;
@@ -314,6 +346,7 @@ function bindFileViewer(skill: SkillDetail): void {
 
     if (seq !== requestSeq || openPath !== path) return;
     panel!.innerHTML = renderFilePanelShell(path, bodyHtml);
+    openMarkdownLinksInNewTab(panel!);
     bindClose();
   }
 
@@ -326,9 +359,56 @@ function bindFileViewer(skill: SkillDetail): void {
         return;
       }
       openPath = path;
-      buttons.forEach((other) => other.classList.toggle("active", other === button));
+      updateFileButtons();
       void openFile(path);
     });
+  });
+}
+
+function bindCopyPath(skill: SkillDetail): void {
+  const button = detailEl.querySelector<HTMLButtonElement>(".copy-path-button");
+  if (!button) return;
+  let resetTimer: number | undefined;
+
+  function setTemporaryLabel(label: string): void {
+    button!.textContent = label;
+    if (resetTimer !== undefined) window.clearTimeout(resetTimer);
+    resetTimer = window.setTimeout(() => {
+      button!.textContent = COPY_PATH_LABEL;
+      resetTimer = undefined;
+    }, 1500);
+  }
+
+  function fallbackCopy(): boolean {
+    const pathEl = detailEl.querySelector<HTMLElement>(".detail-path");
+    if (!pathEl) return false;
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(pathEl);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    try {
+      return document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      selection?.removeAllRanges();
+    }
+  }
+
+  button.addEventListener("click", () => {
+    void (async () => {
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(skill.path);
+        copied = true;
+      } catch {
+        copied = fallbackCopy();
+      }
+      setTemporaryLabel(copied ? "Copied" : "Copy failed");
+    })();
   });
 }
 
@@ -355,9 +435,9 @@ function renderDetail(skill: SkillDetail): void {
             ${skill.files
               .map(
                 (file) => `<li>
-                  <button class="file-button" type="button" data-path="${escapeHtml(file.relativePath)}">
+                  <button class="file-button" type="button" data-path="${escapeHtml(file.relativePath)}" aria-expanded="false">
                     <span class="file-name">${escapeHtml(file.relativePath)}</span>
-                    <span class="file-size">${formatSize(file.size)}</span>
+                    <span class="file-size">${escapeHtml(formatSize(file.size))}</span>
                   </button>
                 </li>`,
               )
@@ -372,8 +452,9 @@ function renderDetail(skill: SkillDetail): void {
       <header class="detail-header">
         <h2>${escapeHtml(skill.name)}</h2>
         <div class="detail-meta">
-          <span class="badge badge-${skill.source}">${SOURCE_LABELS[skill.source]}</span>
+          <span class="badge badge-${escapeHtml(skill.source)}">${escapeHtml(SOURCE_LABELS[skill.source])}</span>
           <span class="detail-path">${escapeHtml(skill.path)}</span>
+          <button class="copy-path-button" type="button">${escapeHtml(COPY_PATH_LABEL)}</button>
           <span class="detail-tokens">≈${skill.descriptionTokens} tok description · ≈${skill.bodyTokens} tok total</span>
         </div>
       </header>
@@ -392,11 +473,13 @@ function renderDetail(skill: SkillDetail): void {
           : ""
       }
       ${auxFiles}
-      <div class="markdown-body">${renderMarkdown(skill.body)}</div>
+      <div class="markdown-body">${skill.bodyHtml}</div>
     </article>
   `;
 
+  openMarkdownLinksInNewTab(detailEl);
   bindFileViewer(skill);
+  bindCopyPath(skill);
 }
 
 function updateStats(): void {
@@ -408,9 +491,9 @@ function updateStats(): void {
     {} as Partial<Record<SkillSource, number>>,
   );
 
-  const parts = (Object.keys(SOURCE_LABELS) as SkillSource[])
-    .filter((source) => (counts[source] ?? 0) > 0)
-    .map((source) => `${SOURCE_LABELS[source]}: ${counts[source]}`);
+  const parts = ALL_SOURCES.filter((source) => (counts[source] ?? 0) > 0).map(
+    (source) => `${SOURCE_LABELS[source]}: ${counts[source]}`,
+  );
 
   const totalDescriptionTokens = state.skills.reduce(
     (sum, skill) => sum + skill.descriptionTokens,
@@ -423,13 +506,13 @@ function updateStats(): void {
 function applySkills(skills: SkillSummary[]): void {
   state.skills = skills;
 
-  if (state.selectedId !== null && skills.some((skill) => skill.id === state.selectedId)) {
+  if (selectedSkillExists()) {
     // The selected skill may have changed on disk — refresh the open detail
     // pane silently (keep the current pane if the refresh fails).
-    void loadSkillDetail(state.selectedId, false);
+    void loadSkillDetail(state.selectedId!, false);
   } else {
     // Also clears a stale "Failed to load skills" message after recovery.
-    state.selectedId = null;
+    clearSelectedSkill();
     renderEmptyDetail();
   }
 
@@ -447,15 +530,44 @@ async function refreshSkills(): Promise<void> {
   applySkills(data.skills);
 }
 
+let reloadStatusTimer: number | undefined;
+
 async function rescan(): Promise<void> {
+  if (reloadStatusTimer !== undefined) {
+    window.clearTimeout(reloadStatusTimer);
+    reloadStatusTimer = undefined;
+  }
+
   reloadEl.disabled = true;
+  reloadEl.textContent = "Reloading…";
+  reloadEl.setAttribute("aria-busy", "true");
+  reloadEl.classList.remove("error");
+  let failed = false;
+
   try {
     const response = await fetch("/api/rescan", { method: "POST" });
-    if (!response.ok) return;
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
     const data = (await response.json()) as { skills: SkillSummary[] };
     applySkills(data.skills);
+  } catch {
+    failed = true;
   } finally {
     reloadEl.disabled = false;
+    reloadEl.removeAttribute("aria-busy");
+
+    if (failed) {
+      reloadEl.textContent = "Failed";
+      reloadEl.classList.add("error");
+      reloadStatusTimer = window.setTimeout(() => {
+        reloadEl.textContent = RELOAD_LABEL;
+        reloadEl.classList.remove("error");
+        reloadStatusTimer = undefined;
+      }, 2000);
+    } else {
+      reloadEl.textContent = RELOAD_LABEL;
+    }
   }
 }
 
@@ -498,21 +610,101 @@ function subscribeToEvents(): void {
   });
 }
 
+function applyUrlState(): void {
+  parseUrlState();
+
+  if (selectedSkillExists()) {
+    renderLoadingDetail();
+    void loadSkillDetail(state.selectedId!, true);
+  } else {
+    clearSelectedSkill();
+    renderEmptyDetail();
+  }
+
+  renderSourceFilters();
+  renderSkillList();
+}
+
+function isTextInputTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
+}
+
+function closeOpenFilePanel(): boolean {
+  const button = detailEl.querySelector<HTMLButtonElement>(
+    ".file-panel:not([hidden]) .file-panel-close",
+  );
+  if (!button) return false;
+  button.click();
+  return true;
+}
+
+function focusFirstSkillItem(): void {
+  skillListEl.querySelector<HTMLButtonElement>(".skill-item")?.focus();
+}
+
+function focusSiblingSkillItem(current: HTMLButtonElement, direction: 1 | -1): void {
+  const buttons = Array.from(skillListEl.querySelectorAll<HTMLButtonElement>(".skill-item"));
+  const index = buttons.indexOf(current);
+  const next = buttons[index + direction];
+  next?.focus();
+}
+
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === "/" && !isTextInputTarget(event.target)) {
+    event.preventDefault();
+    searchEl.focus();
+    return;
+  }
+
+  if (event.key === "Escape" && closeOpenFilePanel()) {
+    event.preventDefault();
+    return;
+  }
+
+  if (event.key === "ArrowDown" && event.target === searchEl) {
+    event.preventDefault();
+    focusFirstSkillItem();
+    return;
+  }
+
+  if (!(event.target instanceof HTMLButtonElement)) return;
+  if (!event.target.classList.contains("skill-item")) return;
+
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    focusSiblingSkillItem(event.target, 1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    focusSiblingSkillItem(event.target, -1);
+  }
+}
+
 async function init(): Promise<void> {
+  parseUrlState();
+
   // Attach handlers and subscribe to events before the first fetch, so a
   // failed initial load still leaves the Reload button and SSE refresh alive.
   searchEl.addEventListener("input", () => {
     state.query = searchEl.value;
     renderSkillList();
+    syncUrlState();
   });
 
   reloadEl.addEventListener("click", () => {
-    void rescan().catch(() => {});
+    void rescan();
   });
+
+  window.addEventListener("popstate", applyUrlState);
+  document.addEventListener("keydown", handleKeydown);
 
   subscribeToEvents();
 
   await refreshSkills();
+  syncUrlState();
 }
 
 init().catch((error: unknown) => {

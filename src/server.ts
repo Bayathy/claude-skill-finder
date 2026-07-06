@@ -26,6 +26,10 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 const WATCH_DEBOUNCE_MS = 300;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
+// Skill files may embed raw HTML — render it as literal text so it cannot
+// inject markup into the page.
+const MARKDOWN_OPTIONS = { noHtmlBlocks: true, noHtmlSpans: true };
+
 /** True when `child` is `parent` itself or nested beneath it. */
 function isPathInside(parent: string, child: string): boolean {
   return child === parent || child.startsWith(parent + sep);
@@ -101,6 +105,7 @@ export async function createServer(options: ServerOptions): Promise<SkillFinderS
       content,
       frontmatter,
       body,
+      bodyHtml: Bun.markdown.html(body, MARKDOWN_OPTIONS),
       files,
     };
 
@@ -168,12 +173,17 @@ export async function createServer(options: ServerOptions): Promise<SkillFinderS
     // UTF-8 garbage. The 2MB cap above keeps the full scan cheap.
     const bytes = new Uint8Array(await Bun.file(realResolved).arrayBuffer());
     const binary = bytes.includes(0);
+    const content = binary ? null : new TextDecoder().decode(bytes);
 
     return Response.json({
       relativePath,
       size,
       binary,
-      content: binary ? null : new TextDecoder().decode(bytes),
+      content,
+      contentHtml:
+        content !== null && relativePath.endsWith(".md")
+          ? Bun.markdown.html(content, MARKDOWN_OPTIONS)
+          : null,
     });
   }
 

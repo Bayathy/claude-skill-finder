@@ -12,6 +12,8 @@ Browse installed Claude skills (`SKILL.md`) in a local Web UI.
 
 ## Quick start
 
+Requires Bun 1.3.14+ (markdown is rendered with `Bun.markdown`).
+
 From this repository:
 
 ```bash
